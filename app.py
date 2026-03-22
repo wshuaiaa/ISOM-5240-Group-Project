@@ -1,6 +1,7 @@
 import os
 from datetime import datetime
 from html import escape
+from zoneinfo import ZoneInfo
 from uuid import uuid4
 
 import streamlit as st
@@ -66,6 +67,8 @@ SENTIMENT_COLORS = {
     "Neutral": {"accent": "#f9a825", "background": "#fff8e1"},
     "Negative": {"accent": "#c62828", "background": "#ffebee"},
 }
+
+BEIJING_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +148,7 @@ def analyze_news(news_text):
     sentiment = normalize_sentiment(sentiment_result["label"])
     sentiment_confidence = float(sentiment_result["score"])
 
-    created_at = datetime.now()
+    created_at = datetime.now(BEIJING_TIMEZONE)
     timestamp = created_at.strftime("%Y/%m/%d %H:%M")
 
     return {
@@ -198,36 +201,31 @@ def render_news_card(item):
                 {escape(formatted_title)}
             </div>
             <div style="white-space:nowrap; color:#555; font-size:0.9rem;">
-                {escape(str(item['timestamp']))}
+                {escape(str(item['timestamp']))} Beijing Time
             </div>
-        </div>
-        <div style="margin-top:10px; color:#333;">
-            <strong>Category:</strong> {escape(str(item['category']))}
-            &nbsp;|&nbsp;
-            <strong>Sentiment:</strong> {escape(str(item['sentiment']))}
-        </div>
-        <div style="margin-top:8px; color:#444;">
-            <strong>Original news:</strong> {escape(str(item['original_news']))}
         </div>
     </div>
     """
     st.markdown(card_html, unsafe_allow_html=True)
-
-    st.caption("Administrator override: manually edit the generated headline if the model output needs correction.")
-    edited_title = st.text_input(
-        "Edit headline",
-        value=str(item["headline"]),
-        key=f"headline_{item['id']}",
-        label_visibility="collapsed",
-    )
-    if st.button("Save headline", key=f"save_{item['id']}"):
-        cleaned_title = edited_title.strip()
-        if not cleaned_title:
-            st.warning("The edited headline cannot be empty.")
-        else:
-            item["headline"] = cleaned_title
-            st.success("Headline updated.")
-            st.rerun()
+    with st.expander("View details / Edit headline", expanded=False):
+        st.write(f"**Category:** {item['category']}")
+        st.write(f"**Sentiment:** {item['sentiment']}")
+        st.write(f"**Original news:** {item['original_news']}")
+        st.caption("Administrator override: manually edit the generated headline if the model output needs correction.")
+        edited_title = st.text_input(
+            "Edit headline",
+            value=str(item["headline"]),
+            key=f"headline_{item['id']}",
+            label_visibility="collapsed",
+        )
+        if st.button("Save headline", key=f"save_{item['id']}"):
+            cleaned_title = edited_title.strip()
+            if not cleaned_title:
+                st.warning("The edited headline cannot be empty.")
+            else:
+                item["headline"] = cleaned_title
+                st.success("Headline updated.")
+                st.rerun()
 
 
 
