@@ -1,0 +1,11 @@
+streamlit
+transformers<5.0.0
+torch
+datasets
+evaluate
+accelerate
+huggingface_hub
+sentencepiece
+scikit-learn
+pandas
+openpyxl
