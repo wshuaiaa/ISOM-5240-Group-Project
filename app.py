@@ -1,7 +1,8 @@
 import os
-from datetime import date
+from datetime import datetime
+from html import escape
+from uuid import uuid4
 
-import pandas as pd
 import streamlit as st
 from transformers import pipeline
 
@@ -21,10 +22,8 @@ SENTIMENT_MODEL = os.getenv(
     "SENTIMENT_MODEL",
     "wshuaiaa/News_sentiment_Finetuned",
 )
-BRIEFING_MODEL = os.getenv(
-    "BRIEFING_MODEL",
-    "google/flan-t5-small",
-)
+
+CATEGORY_OPTIONS = ["World", "Business", "Sci/Tech", "Sports"]
 
 CATEGORY_LABELS = {
     "LABEL_0": "World",
@@ -56,54 +55,34 @@ SENTIMENT_LABELS = {
     "positive": "Positive",
 }
 
-SENTIMENT_SCORES = {
-    "Negative": -1,
-    "Neutral": 0,
-    "Positive": 1,
+MARKET_TONES = {
+    "Positive": "Bullish",
+    "Neutral": "Neutral",
+    "Negative": "Bearish",
 }
 
-BRIEFING_CATEGORIES = ["World", "Business", "Sci/Tech"]
+SENTIMENT_COLORS = {
+    "Positive": {"accent": "#2e7d32", "background": "#e8f5e9"},
+    "Neutral": {"accent": "#f9a825", "background": "#fff8e1"},
+    "Negative": {"accent": "#c62828", "background": "#ffebee"},
+}
 
 
 # ---------------------------------------------------------------------------
-# 2. File input: upload Excel daily news file
+# 2. Manual text input for raw news
 # ---------------------------------------------------------------------------
-def get_uploaded_news():
-    """
-    Upload a daily Excel file. The first column should be the raw news text
-    and the second column should be the country. Returns a cleaned DataFrame
-    or None.
-    """
-    st.subheader("Daily News Input")
-    uploaded_file = st.file_uploader(
-        "Upload an Excel file (.xlsx)",
-        type=["xlsx"],
-        help="Column 1 = raw news text, Column 2 = country.",
+def get_news_input():
+    """Collect raw news text from a text area."""
+    st.subheader("Raw News Input")
+    return st.text_area(
+        "Paste the latest news content",
+        height=180,
+        placeholder="Enter a full raw news paragraph or article text here...",
     )
-    if uploaded_file is None:
-        return None
-
-    df = pd.read_excel(uploaded_file)
-    if df.shape[1] < 2:
-        st.error("The uploaded Excel file must have at least two columns: raw news text and country.")
-        return None
-
-    working_df = df.iloc[:, :2].copy()
-    working_df.columns = ["news_text", "country"]
-    working_df["news_text"] = working_df["news_text"].astype(str).str.strip()
-    working_df["country"] = working_df["country"].astype(str).str.strip()
-    working_df = working_df[(working_df["news_text"] != "") & (working_df["country"] != "")]
-    working_df = working_df.reset_index(drop=True)
-
-    if working_df.empty:
-        st.error("The uploaded file does not contain usable news text and country values.")
-        return None
-
-    return working_df
 
 
 # ---------------------------------------------------------------------------
-# 3. Load and cache the four pipelines
+# 3. Load and cache the three pipelines
 # ---------------------------------------------------------------------------
 @st.cache_resource
 def get_headline_generator():
@@ -120,11 +99,6 @@ def get_sentiment_classifier():
     return pipeline("text-classification", model=SENTIMENT_MODEL)
 
 
-@st.cache_resource
-def get_briefing_generator():
-    return pipeline("text2text-generation", model=BRIEFING_MODEL)
-
-
 # ---------------------------------------------------------------------------
 # 4. Headline generation, classification, and sentiment scoring
 # ---------------------------------------------------------------------------
@@ -138,192 +112,190 @@ def normalize_sentiment(raw_label):
 
 
 
+def ensure_session_state():
+    st.session_state.setdefault("news_items", [])
+
+
+
 def generate_headline(news_text):
-    """Generate a short headline from raw news text."""
+    """Generate a short title-like headline from raw news text."""
     generator = get_headline_generator()
     result = generator(news_text, max_length=30, min_length=6, do_sample=False)[0]["generated_text"]
     return " ".join(result.split()).strip()
 
 
 
-def classify_and_score_news(news_df):
-    """
-    First generate a short headline from raw news text, then classify the
-    generated headline, remove Sports items, and score sentiment.
-    """
+def build_formatted_title(category, sentiment, headline):
+    market_tone = MARKET_TONES.get(sentiment, "Neutral")
+    return f"[{category} {market_tone} News] {headline}"
+
+
+
+def analyze_news(news_text):
+    generated_headline = generate_headline(news_text)
+
     classifier = get_news_classifier()
     sentiment_classifier = get_sentiment_classifier()
 
-    rows = []
-    for _, row in news_df.iterrows():
-        generated_headline = generate_headline(row["news_text"])
-        category_result = classifier(generated_headline, truncation=True, max_length=512)[0]
-        category = normalize_category(category_result["label"])
+    category_result = classifier(generated_headline, truncation=True, max_length=512)[0]
+    category = normalize_category(category_result["label"])
+    category_confidence = float(category_result["score"])
 
-        if category == "Sports":
-            continue
+    sentiment_result = sentiment_classifier(generated_headline, truncation=True, max_length=512)[0]
+    sentiment = normalize_sentiment(sentiment_result["label"])
+    sentiment_confidence = float(sentiment_result["score"])
 
-        sentiment_result = sentiment_classifier(generated_headline, truncation=True, max_length=512)[0]
-        sentiment = normalize_sentiment(sentiment_result["label"])
+    created_at = datetime.now()
+    timestamp = created_at.strftime("%Y/%m/%d %H:%M")
 
-        rows.append(
-            {
-                "original_news_text": row["news_text"],
-                "generated_headline": generated_headline,
-                "country": row["country"],
-                "category": category,
-                "category_confidence": float(category_result["score"]),
-                "sentiment": sentiment,
-                "sentiment_confidence": float(sentiment_result["score"]),
-                "sentiment_value": SENTIMENT_SCORES.get(sentiment, 0),
-            }
-        )
-
-    return pd.DataFrame(rows)
+    return {
+        "id": str(uuid4()),
+        "created_at": created_at.isoformat(),
+        "timestamp": timestamp,
+        "original_news": news_text,
+        "headline": generated_headline,
+        "category": category,
+        "category_confidence": round(category_confidence, 4),
+        "sentiment": sentiment,
+        "sentiment_confidence": round(sentiment_confidence, 4),
+    }
 
 
 # ---------------------------------------------------------------------------
-# 5. Build prompt for the daily country briefing
+# 5. News board rendering
 # ---------------------------------------------------------------------------
-def build_section_summary(processed_df, category_name):
-    category_df = processed_df[processed_df["category"] == category_name]
-    if category_df.empty:
-        return f"{category_name}: No major relevant headlines."
+def render_sentiment_legend():
+    legend_html = """
+    <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:6px;">
+        <span style="background:#e8f5e9; color:#2e7d32; padding:6px 10px; border-radius:999px; font-weight:600;">Bullish / Positive</span>
+        <span style="background:#fff8e1; color:#f9a825; padding:6px 10px; border-radius:999px; font-weight:600;">Neutral</span>
+        <span style="background:#ffebee; color:#c62828; padding:6px 10px; border-radius:999px; font-weight:600;">Bearish / Negative</span>
+    </div>
+    """
+    st.markdown(legend_html, unsafe_allow_html=True)
 
-    positive_items = category_df[category_df["sentiment"] == "Positive"]["generated_headline"].head(3).tolist()
-    negative_items = category_df[category_df["sentiment"] == "Negative"]["generated_headline"].head(3).tolist()
-    neutral_items = category_df[category_df["sentiment"] == "Neutral"]["generated_headline"].head(2).tolist()
 
-    return (
-        f"{category_name}: "
-        f"Positive headlines: {positive_items}. "
-        f"Negative headlines: {negative_items}. "
-        f"Neutral headlines: {neutral_items}."
+
+def render_news_card(item):
+    sentiment = str(item["sentiment"])
+    colors = SENTIMENT_COLORS.get(sentiment, SENTIMENT_COLORS["Neutral"])
+    formatted_title = build_formatted_title(
+        str(item["category"]),
+        str(item["sentiment"]),
+        str(item["headline"]),
     )
 
+    card_html = f"""
+    <div style="
+        border-left: 8px solid {colors['accent']};
+        background: {colors['background']};
+        padding: 14px 16px;
+        border-radius: 10px;
+        margin: 10px 0 16px 0;
+    ">
+        <div style="display:flex; justify-content:space-between; gap:16px; align-items:flex-start;">
+            <div style="font-weight:700; color:{colors['accent']}; font-size:1rem;">
+                {escape(formatted_title)}
+            </div>
+            <div style="white-space:nowrap; color:#555; font-size:0.9rem;">
+                {escape(str(item['timestamp']))}
+            </div>
+        </div>
+        <div style="margin-top:10px; color:#333;">
+            <strong>Category:</strong> {escape(str(item['category']))}
+            &nbsp;|&nbsp;
+            <strong>Sentiment:</strong> {escape(str(item['sentiment']))}
+        </div>
+        <div style="margin-top:8px; color:#444;">
+            <strong>Original news:</strong> {escape(str(item['original_news']))}
+        </div>
+    </div>
+    """
+    st.markdown(card_html, unsafe_allow_html=True)
+
+    st.caption("Administrator override: manually edit the generated headline if the model output needs correction.")
+    edited_title = st.text_input(
+        "Edit headline",
+        value=str(item["headline"]),
+        key=f"headline_{item['id']}",
+        label_visibility="collapsed",
+    )
+    if st.button("Save headline", key=f"save_{item['id']}"):
+        cleaned_title = edited_title.strip()
+        if not cleaned_title:
+            st.warning("The edited headline cannot be empty.")
+        else:
+            item["headline"] = cleaned_title
+            st.success("Headline updated.")
+            st.rerun()
 
 
-def interpret_average_sentiment(value):
-    if value >= 0.25:
-        return "Overall sentiment is positive."
-    if value <= -0.25:
-        return "Overall sentiment is negative."
-    return "Overall sentiment is neutral."
 
+def render_board(items):
+    if not items:
+        st.info("No news items match the current filter yet.")
+        return
 
-
-def build_briefing_prompt(processed_df, selected_country, report_date):
-    average_sentiment = round(processed_df["sentiment_value"].mean(), 4) if not processed_df.empty else 0.0
-
-    world_summary = build_section_summary(processed_df, "World")
-    business_summary = build_section_summary(processed_df, "Business")
-    sci_tech_summary = build_section_summary(processed_df, "Sci/Tech")
-    overall_sentiment = interpret_average_sentiment(average_sentiment)
-
-    prompt = f"""
-Write a daily market briefing for {selected_country} on {report_date.isoformat()}.
-Average sentiment score: {average_sentiment}.
-{world_summary}
-{business_summary}
-{sci_tech_summary}
-Instructions:
-- Write exactly three short paragraphs.
-- Paragraph 1 must focus on World and politics.
-- Paragraph 2 must focus on Business and market developments.
-- Paragraph 3 must focus on Sci/Tech developments.
-- In each paragraph explain the good news and the bad news when available.
-- End the last paragraph with the overall market sentiment.
-- The overall market sentiment is: {overall_sentiment}
-""".strip()
-
-    return prompt, average_sentiment
+    for item in items:
+        render_news_card(item)
 
 
 # ---------------------------------------------------------------------------
-# 6. Daily briefing generation
-# ---------------------------------------------------------------------------
-def generate_daily_briefing(prompt):
-    generator = get_briefing_generator()
-    result = generator(prompt, max_new_tokens=260, do_sample=False)[0]["generated_text"]
-    return result.strip()
-
-
-# ---------------------------------------------------------------------------
-# Main: Streamlit UI
+# Main: Streamlit UI – administrator news board demo
 # ---------------------------------------------------------------------------
 def main():
     st.set_page_config(
-        page_title="Country Market Sentiment Briefing",
-        page_icon=":bar_chart:",
+        page_title="Administrator News Board Demo",
+        page_icon=":newspaper:",
         layout="wide",
     )
-    st.title("Country Market Sentiment Briefing")
+    ensure_session_state()
+
+    st.title("Administrator News Board Demo")
     st.markdown(
-        "Upload a daily news Excel file. The app will first generate a short headline, "
-        "then classify the headline, score sentiment, and generate a country-level daily briefing."
+        "This demo lets staff paste raw incoming news, generate a short headline, "
+        "classify the headline, detect sentiment, and publish a formatted administrator news board item."
     )
 
-    with st.sidebar:
-        st.subheader("Models Used")
-        st.caption(f"Headline generator: `{HEADLINE_MODEL}`")
-        st.caption(f"News classifier: `{NEWS_CLASSIFIER_MODEL}`")
-        st.caption(f"Sentiment model: `{SENTIMENT_MODEL}`")
-        st.caption(f"Briefing model: `{BRIEFING_MODEL}`")
+    top_left, top_right = st.columns([3, 2])
 
-    news_df = get_uploaded_news()
-    if news_df is None:
-        st.info("Please upload a daily news Excel file to continue.")
-        return
+    with top_left:
+        news_text = get_news_input()
+        if st.button("Generate and publish news", type="primary"):
+            cleaned_news = news_text.strip()
+            if not cleaned_news:
+                st.warning("Please enter a news article before submitting.")
+            else:
+                with st.spinner("Running headline generation, classification, and sentiment analysis..."):
+                    processed_item = analyze_news(cleaned_news)
+                st.session_state["news_items"].insert(0, processed_item)
+                st.success("News item added to the administrator board.")
 
-    st.subheader("Uploaded Data Preview")
-    st.dataframe(news_df.head(10), use_container_width=True)
-
-    countries = sorted(news_df["country"].dropna().unique().tolist())
-    selected_country = st.selectbox("Select country", countries)
-    report_date = st.date_input("Select report date", value=date.today())
-
-    if st.button("Generate daily briefing", type="primary"):
-        country_df = news_df[news_df["country"] == selected_country].reset_index(drop=True)
-        if country_df.empty:
-            st.warning("No news items are available for the selected country.")
-            return
-
-        with st.spinner("Running headline generation, classification, and sentiment analysis..."):
-            processed_df = classify_and_score_news(country_df)
-
-        if processed_df.empty:
-            st.warning("All generated headlines were filtered out. No non-sports headlines remain for this country.")
-            return
-
-        with st.spinner("Generating the daily briefing..."):
-            prompt, average_sentiment = build_briefing_prompt(processed_df, selected_country, report_date)
-            briefing = generate_daily_briefing(prompt)
-
-        st.subheader("Pipeline Result")
-        metric_col1, metric_col2, metric_col3 = st.columns(3)
-        metric_col1.metric("Uploaded news items", len(country_df))
-        metric_col2.metric("Relevant headlines kept", len(processed_df))
-        metric_col3.metric("Average sentiment", f"{average_sentiment:.2f}")
-
-        st.subheader("Generated Headlines and Analysis")
-        st.dataframe(processed_df, use_container_width=True)
-
-        st.subheader("Category Breakdown")
-        st.bar_chart(processed_df["category"].value_counts().reindex(BRIEFING_CATEGORIES, fill_value=0))
-
-        st.subheader("Sentiment Breakdown")
-        st.bar_chart(
-            processed_df["sentiment"].value_counts().reindex(
-                ["Positive", "Neutral", "Negative"],
-                fill_value=0,
-            )
+    with top_right:
+        st.subheader("Board Filter")
+        selected_categories = st.multiselect(
+            "Filter categories",
+            options=CATEGORY_OPTIONS,
+            default=CATEGORY_OPTIONS,
         )
+        st.subheader("Sentiment Color Legend")
+        render_sentiment_legend()
+        with st.expander("Models used", expanded=False):
+            st.caption(f"Headline generator: `{HEADLINE_MODEL}`")
+            st.caption(f"News classifier: `{NEWS_CLASSIFIER_MODEL}`")
+            st.caption(f"Sentiment model: `{SENTIMENT_MODEL}`")
 
-        st.subheader("Generated Daily Briefing")
-        st.write(briefing)
+    all_items = st.session_state["news_items"]
+    filtered_items = [item for item in all_items if str(item["category"]) in selected_categories]
 
-        with st.expander("Prompt used for generation", expanded=False):
-            st.code(prompt)
+    metric_col1, metric_col2, metric_col3 = st.columns(3)
+    metric_col1.metric("Total news items", len(all_items))
+    metric_col2.metric("Visible after filter", len(filtered_items))
+    latest_time = filtered_items[0]["timestamp"] if filtered_items else "-"
+    metric_col3.metric("Latest submission time", str(latest_time))
+
+    st.subheader("Administrator News Board")
+    render_board(filtered_items)
 
 
 if __name__ == "__main__":

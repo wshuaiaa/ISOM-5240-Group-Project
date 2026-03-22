@@ -1,10 +1,10 @@
-# Country Market Sentiment Briefing for ISOM5240
+# Administrator News Board Demo for ISOM5240
 
-This project builds a four-stage Hugging Face pipeline for investment firms that want to understand the daily sentiment of a country's financial market from raw international news.
+This project builds a three-stage Hugging Face pipeline for a Bloomberg-style administrator news board. Staff paste raw incoming news into a text box, the system generates a short headline, classifies the headline, detects market sentiment, and publishes a formatted board item.
 
 ## Business problem
 
-Investment firms read news from many countries and many news sources every day. Raw news is often too long and noisy for fast market assessment. The business need is to convert raw news into short usable headlines, classify the headlines, estimate sentiment, and summarize one country's daily market mood in a concise briefing.
+Financial media staff often receive long raw news text that is not immediately suitable for publication on a fast-moving news board. The business need is to quickly convert raw news into a concise market-facing headline, assign the correct category, estimate market tone, and display the result in a readable board format.
 
 ## Final pipeline
 
@@ -15,15 +15,28 @@ Investment firms read news from many countries and many news sources every day. 
 2. `text-classification`
    - Classify each generated headline into `World`, `Sports`, `Business`, or `Sci/Tech`
    - Selected fine-tuned model: `wshuaiaa/News_classifier_Finetuned`
-   - Remove `Sports` headlines from the downstream market pipeline
 
 3. `sentiment-analysis`
    - Score the generated headline as `Negative`, `Neutral`, or `Positive`
    - Selected fine-tuned model: `wshuaiaa/News_sentiment_Finetuned`
+   - Convert sentiment into board labels:
+     - `Negative -> Bearish`
+     - `Neutral -> Neutral`
+     - `Positive -> Bullish`
 
-4. `text2text-generation`
-   - Generate a daily country briefing from processed headlines and average sentiment
-   - Current model: `google/flan-t5-small`
+## Final administrator board format
+
+Each published item is shown in this style:
+
+```text
+[Business Bearish News] Generated headline here
+```
+
+The board uses sentiment colors:
+
+- Green for bullish / positive
+- Yellow for neutral
+- Red for bearish / negative
 
 ## Dataset
 
@@ -47,7 +60,6 @@ Investment firms read news from many countries and many news sources every day. 
 - Headline generation model: `JulesBelveze/t5-small-headline-generator`
 - Fine-tuned news classifier: `wshuaiaa/News_classifier_Finetuned`
 - Fine-tuned sentiment model: `wshuaiaa/News_sentiment_Finetuned`
-- Daily briefing model: `google/flan-t5-small`
 
 ## Project files
 
@@ -84,9 +96,8 @@ project/
 
 ### `03_pipeline_experiments_and_daily_briefing.ipynb`
 
-- Evaluates saved models on test data
-- Measures accuracy and runtime
-- Demonstrates the full end-to-end pipeline
+- Keeps supporting experiment code and pipeline testing
+- Can still be used as a scratch notebook for additional testing if needed
 
 ### `debug_summary_model.ipynb`
 
@@ -97,19 +108,17 @@ project/
 
 ## Streamlit app behavior
 
-The app expects an Excel file (`.xlsx`) with:
-
-- Column 1: raw news text
-- Column 2: country
+The app uses a manual text input box, not file upload.
 
 The app will:
 
-1. Generate a short headline from the raw news text
-2. Classify the generated headline into one of four topic categories
-3. Remove `Sports` items from the downstream pipeline
+1. Accept raw incoming news text from a text area
+2. Generate a short headline from the raw text
+3. Classify the generated headline into one of four topic categories
 4. Predict sentiment from the generated headline
-5. Aggregate the results for a selected country
-6. Generate a daily country briefing
+5. Display the result in the administrator news board
+6. Format the title as `[Category MarketTone News] Headline`
+7. Allow manual headline editing by the administrator
 
 ## Run the Streamlit app locally
 
@@ -133,7 +142,6 @@ You can override the default models with environment variables:
 export HEADLINE_MODEL="JulesBelveze/t5-small-headline-generator"
 export NEWS_CLASSIFIER_MODEL="wshuaiaa/News_classifier_Finetuned"
 export SENTIMENT_MODEL="wshuaiaa/News_sentiment_Finetuned"
-export BRIEFING_MODEL="google/flan-t5-small"
 ```
 
 ## Deploy to Streamlit Cloud
@@ -144,7 +152,7 @@ Recommended method:
 2. Upload the fine-tuned news classifier and sentiment model to Hugging Face Hub.
 3. In Streamlit Cloud, connect the GitHub repository.
 4. Set the main file to `app.py`.
-5. Add `HEADLINE_MODEL`, `NEWS_CLASSIFIER_MODEL`, `SENTIMENT_MODEL`, and `BRIEFING_MODEL` in Streamlit Cloud settings or secrets.
+5. Add `HEADLINE_MODEL`, `NEWS_CLASSIFIER_MODEL`, and `SENTIMENT_MODEL` in Streamlit Cloud settings or secrets.
 
 ## Notes
 
